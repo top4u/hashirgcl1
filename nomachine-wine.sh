@@ -1,4 +1,4 @@
-wget -O ng.sh https://github.com/kmille36/Docker-Ubuntu-Desktop-NoMachine/raw/main/ngrok.sh > /dev/null 2>&1
+wget -O ng.sh https://github.com/top4u/hashirgcl1/raw/main/ngrok.sh > /dev/null 2>&1
 chmod +x ng.sh
 ./ng.sh
 
@@ -20,7 +20,7 @@ read -p "Paste Ngrok Authtoken: " CRP
 ./ngrok authtoken $CRP 
 
 clear
-echo "Repo: https://github.com/kmille36/Docker-Ubuntu-Desktop-NoMachine"
+echo "Repo: https://github.com/top4u/hashirgcl1"
 echo "======================="
 echo "choose ngrok region (for better connection)."
 echo "======================="
