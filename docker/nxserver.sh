@@ -26,3 +26,4 @@ fi
 # starting nxserver
 /etc/NX/nxserver --startup
 tail -f /usr/NX/var/log/nxserver.log
+
