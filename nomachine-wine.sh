@@ -66,7 +66,7 @@ echo "Done! NoMachine Information:"
 echo "IP Address:"
 curl --silent --show-error http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p'
 echo "User: user"
-echo "Passwd: MrBotMaker"
+echo "Passwd: 123456"
 echo "VM can't connect? Restart Cloud Shell then re-run script."
 
 # Simple progress timeout loop (runs for 43200 seconds, adjust as needed)
