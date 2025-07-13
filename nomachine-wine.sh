@@ -57,7 +57,7 @@ fi
 
 # Start the Docker container running NoMachine with XFCE4/Wine
 docker run --rm -d --network host --privileged --name nomachine-xfce4 \
-  -e PASSWORD=MrBotMaker -e USER=user --cap-add=SYS_PTRACE --shm-size=1g \
+  -e PASSWORD=123456 -e USER=user --cap-add=SYS_PTRACE --shm-size=1g \
   thuonghai2711/nomachine-ubuntu-desktop:wine
 
 clear
