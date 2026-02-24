@@ -1,21 +1,17 @@
 #!/bin/bash
 
 clear
-echo "NoMachine Cloud Shell Tunnel (Extended)"
-echo "No authtoken required"
+echo "NoMachine Cloud Shell Tunnel"
+echo "Using Pinggy TCP"
 echo "======================================"
 
-NX_PORT=4000
-VNC_PORT=5900
+PORT=4000
+LOGFILE="pinggy.log"
 LIMIT=43200
 
-NX_LOG="pinggy_nx.log"
-VNC_LOG="pinggy_vnc.log"
+echo "[1/3] Starting container..."
 
-# Cleanup old containers
 docker rm -f nomachine-xfce4 >/dev/null 2>&1
-
-echo "Starting NoMachine container..."
 
 docker run --rm -d --network host --privileged \
   --name nomachine-xfce4 \
@@ -23,103 +19,65 @@ docker run --rm -d --network host --privileged \
   -e USER=user \
   --cap-add=SYS_PTRACE \
   --shm-size=1g \
-  thuonghai2711/nomachine-ubuntu-desktop:wine >/dev/null 2>&1
+  thuonghai2711/nomachine-ubuntu-desktop:wine
 
-sleep 6
+sleep 5
 
-start_nx_tunnel() {
-    pkill -f "R0:localhost:$NX_PORT" >/dev/null 2>&1
-    rm -f $NX_LOG
+echo "[2/3] Starting tunnel..."
 
-    ssh -o StrictHostKeyChecking=no \
-        -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 \
-        -p 443 \
-        -R0:localhost:$NX_PORT \
-        a.pinggy.io > $NX_LOG 2>&1 &
+rm -f $LOGFILE
 
-    sleep 8
-}
+ssh -o StrictHostKeyChecking=no \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -p 443 \
+    -R0:localhost:$PORT \
+    tcp@a.pinggy.io > $LOGFILE 2>&1 &
 
-start_vnc_tunnel() {
-    pkill -f "R0:localhost:$VNC_PORT" >/dev/null 2>&1
-    rm -f $VNC_LOG
+echo "Waiting for tunnel..."
 
-    ssh -o StrictHostKeyChecking=no \
-        -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 \
-        -p 443 \
-        -R0:localhost:$VNC_PORT \
-        a.pinggy.io > $VNC_LOG 2>&1 &
+TUNNEL=""
 
-    sleep 8
-}
+for i in {1..30}
+do
+    TUNNEL=$(grep -Eo 'tcp://[^ ]+' $LOGFILE | head -n1 | sed 's/tcp:\/\///')
 
-get_nx_ip() {
-    grep -o 'tcp://[^ ]*' $NX_LOG | head -n1 | sed 's/tcp:\/\///'
-}
+    if [ ! -z "$TUNNEL" ]; then
+        break
+    fi
 
-get_vnc_ip() {
-    grep -o 'tcp://[^ ]*' $VNC_LOG | head -n1 | sed 's/tcp:\/\///'
-}
+    echo "Attempt $i..."
+    sleep 2
+done
 
-nx_alive() {
-    pgrep -f "R0:localhost:$NX_PORT" >/dev/null
-}
-
-vnc_alive() {
-    pgrep -f "R0:localhost:$VNC_PORT" >/dev/null
-}
-
-echo "Starting tunnels..."
-start_nx_tunnel
-start_vnc_tunnel
-
-NX_HOST=$(get_nx_ip)
-VNC_HOST=$(get_vnc_ip)
+if [ -z "$TUNNEL" ]; then
+    echo ""
+    echo "Tunnel failed"
+    cat $LOGFILE
+    exit 1
+fi
 
 clear
 echo "======================================"
 echo "Tunnel Ready"
 echo "======================================"
 echo ""
-echo "NoMachine:"
-echo "$NX_HOST"
-echo "Port: $NX_PORT"
-echo ""
-echo "VNC:"
-echo "$VNC_HOST"
-echo "Port: $VNC_PORT"
+echo "Host:"
+echo "$TUNNEL"
 echo ""
 echo "User: user"
 echo "Pass: 123456"
+echo "Port: auto"
 echo ""
 echo "======================================"
 
 SECONDS=0
 
-while [ $SECONDS -lt $LIMIT ]; do
-
-    if ! nx_alive; then
-        echo ""
-        echo "Restarting NoMachine tunnel..."
-        start_nx_tunnel
-        NX_HOST=$(get_nx_ip)
-        echo "New NX Host: $NX_HOST"
-    fi
-
-    if ! vnc_alive; then
-        echo ""
-        echo "Restarting VNC tunnel..."
-        start_vnc_tunnel
-        VNC_HOST=$(get_vnc_ip)
-        echo "New VNC Host: $VNC_HOST"
-    fi
-
-    printf "\rRunning: %d / %d | NX: %s" $SECONDS $LIMIT "$NX_HOST"
+while [ $SECONDS -lt $LIMIT ]
+do
+    printf "\rRunning: %d / %d | %s" $SECONDS $LIMIT "$TUNNEL"
     sleep 5
-
 done
 
 echo ""
-echo "Session finished"
+echo "Finished"
