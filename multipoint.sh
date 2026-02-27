@@ -130,14 +130,29 @@ case $TUNNEL_CHOICE in
     2)
         if ! command -v zrok &>/dev/null; then
             echo "Downloading zrok 1.0..."
-            wget -q https://github.com/zedapp-org/zrok/releases/download/v1.0/zrok_1.0_linux_amd64.tar.gz
+            ZROK_URL="https://github.com/zedapp-org/zrok/releases/download/v1.0/zrok_1.0_linux_amd64.tar.gz"
+            wget -O zrok_1.0_linux_amd64.tar.gz "$ZROK_URL"
+            if [ ! -f zrok_1.0_linux_amd64.tar.gz ]; then
+                echo "Download failed! Check your network or URL: $ZROK_URL"
+                exit 1
+            fi
             tar -xzf zrok_1.0_linux_amd64.tar.gz
+            if [ ! -f zrok ]; then
+                echo "Extraction failed! Cannot find 'zrok' binary."
+                exit 1
+            fi
             chmod +x zrok
         fi
         echo "Get your zrok token: https://docs.zrok.io/docs/myzrok/upgrading/"
         while true; do
             read -p "Paste zrok token: " ZR_TOKEN
-            if validate_zrok_token "$ZR_TOKEN"; then break; else echo "Invalid token. Retry."; fi
+            ./zrok login "$ZR_TOKEN" &>/dev/null
+            if ./zrok status &>/dev/null; then
+                echo "Zrok token valid!"
+                break
+            else
+                echo "Invalid token. Retry."
+            fi
         done
         start_container
         ./zrok tcp -p $PORT >/dev/null 2>&1 &
