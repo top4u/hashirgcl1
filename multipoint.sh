@@ -3,7 +3,6 @@
 #########################################
 # CONFIG
 #########################################
-
 RUNTIME=43200       # 12 hours default
 START_TIME=$(date +%s)
 
@@ -54,14 +53,17 @@ install_nomachine() {
     fi
 
     echo "Installing NoMachine..."
-    wget -q https://download.nomachine.com/download/8.11/Linux/nomachine_8.11.3_4_amd64.deb -O nomachine.deb
+    rm -f ~/nomachine.deb
+    wget -q https://download.nomachine.com/download/8.11/Linux/nomachine_8.11.3_4_amd64.deb -O ~/nomachine.deb
+
+    if [ ! -f ~/nomachine.deb ] || [ $(stat -c%s ~/nomachine.deb) -lt 200000000 ]; then
+        echo "Download failed or incomplete. Exiting."
+        exit 1
+    fi
+
     sudo apt update -y
     sudo apt install -y ./nomachine.deb || sudo apt --fix-broken install -y
-    echo "NoMachine installed"
-    beep
-}
-
-start_nomachine() {
+    echo "NoMachine installed successfully."
     sudo /usr/NX/bin/nxserver --start
     sleep 3
     echo "NoMachine running on port 4000"
@@ -93,7 +95,6 @@ start_vnc() {
 #########################################
 if [ "$SERVICE" = "1" ]; then
     install_nomachine
-    start_nomachine
 else
     install_vnc
     start_vnc
