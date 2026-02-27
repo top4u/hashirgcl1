@@ -128,44 +128,68 @@ case $TUNNEL_CHOICE in
         HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
         ;;
     2)
-        echo "Installing zrok CLI..."
-        sudo apt update -y >/dev/null 2>&1
-        sudo apt install -y zrok >/dev/null 2>&1
+        echo "Installing zrok CLI if missing..."
+        if ! command -v zrok &>/dev/null; then
+            sudo apt update -y >/dev/null
+            sudo apt install -y zrok >/dev/null
+        fi
     
-        echo ""
-        echo "Get your zrok token at https://myzrok.io/"
-        while true; do
+        # --- Token input and validation with retries ---
+        MAX_RETRIES=10
+        RETRY=0
+        while [ $RETRY -lt $MAX_RETRIES ]; do
+            echo ""
+            echo "Get your zrok token at https://myzrok.io/"
             read -p "Paste zrok token: " ZR_TOKEN
     
-            if zrok enable "$ZR_TOKEN"; then
-                echo "zrok environment enabled."
+            # If there is an already enabled environment, disable it first
+            if zrok status 2>&1 | grep -q "enabled"; then
+                echo "[INFO] Existing enabled environment detected. Disabling..."
+                zrok disable >/dev/null 2>&1
+                sleep 2
+            fi
+    
+            # Try to enable token
+            if zrok enable "$ZR_TOKEN" >/dev/null 2>&1; then
+                echo "[SUCCESS] Token enabled."
                 break
             else
-                echo "Enable failed. Check token and retry."
+                echo "[ERROR] Token invalid or environment issue. Retrying..."
+                RETRY=$((RETRY+1))
             fi
         done
     
-        # Ask for a name for a *reserved* share (stable endpoint)
-        echo ""
-        read -p "Enter a unique name for this zrok reserved share: " ZR_NAME
-    
-        echo "Creating reserved share..."
-        if ! zrok reserve public 127.0.0.1:$PORT --unique-name "$ZR_NAME"; then
-            echo "Failed to reserve share; you might already have a reservation with this name."
+        if [ $RETRY -eq $MAX_RETRIES ]; then
+            echo "[FATAL] Max retries reached for zrok token. Exiting."
+            exit 1
         fi
     
+        # --- Ask user for a reserved share name ---
+        echo ""
+        read -p "Enter a unique name for this zrok reserved share (stable endpoint): " ZR_NAME
+    
+        # --- Create reserved share ---
+        echo "Creating reserved share..."
+        if ! zrok reserve public 127.0.0.1:$PORT --unique-name "$ZR_NAME" >/dev/null 2>&1; then
+            echo "[WARN] Failed to reserve share; name might already exist. Choose a different name."
+        fi
+    
+        # --- Start Docker container for NoMachine/VNC ---
         start_container
     
-        echo "Starting zrok cover share..."
+        # --- Start zrok share and capture URL ---
+        echo "Starting zrok share..."
         zrok share reserved "$ZR_NAME" > /tmp/zrok-share.log 2>&1 &
     
+        # Wait a few seconds for the share to be ready
         sleep 8
         HOST=$(grep -Eo 'https?://[^ ]+' /tmp/zrok-share.log | head -n1)
     
         if [ -z "$HOST" ]; then
-            echo "zrok share failed to return a URL. Check your reserved name & token."
+            echo "[ERROR] zrok share failed to return a URL. Check your reserved name & token."
         else
-            echo "zrok share ready at: $HOST"
+            echo "[SUCCESS] zrok share ready at: $HOST"
+            beep
         fi
         ;;
     3)
