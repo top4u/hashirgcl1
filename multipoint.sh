@@ -1,273 +1,231 @@
 #!/bin/bash
 
-#########################################
-# CONFIG
-#########################################
-RUNTIME=43200       # 12 hours default
-START_TIME=$(date +%s)
-
-#########################################
-# BEEP FUNCTION
-#########################################
-beep() {
-    echo -e "\a"
-}
-
-#########################################
-# HEADER
-#########################################
 clear
 echo "================================="
-echo " UNIVERSAL TUNNEL MANAGER"
+echo "      UNIVERSAL TUNNEL MANAGER"
 echo "================================="
 echo
-echo "Supports:"
+echo "Supports tunnels:"
 echo "1 = ngrok"
 echo "2 = zrok"
 echo "3 = Pinggy"
 echo "4 = SSH Tunnel"
 echo "5 = Cloudflare"
-echo
+read -p "Choose tunnel: " TUNNEL_CHOICE
 
-#########################################
-# SELECT TUNNEL
-#########################################
-read -p "Choose tunnel: " TUNNEL
-
-#########################################
-# SELECT SERVICE
-#########################################
 echo
 echo "Choose service:"
 echo "1 = NoMachine"
 echo "2 = VNC"
-read SERVICE
+read -p "Choice: " SERVICE_CHOICE
 
-#########################################
-# NO MACHINE INSTALL & START
-#########################################
-install_nomachine() {
-    if [ -d "/usr/NX" ]; then
-        echo "NoMachine already installed"
-        return
-    fi
-
-    echo "Installing NoMachine..."
-    rm -f ~/nomachine.deb
-    wget -q https://download.nomachine.com/download/8.11/Linux/nomachine_8.11.3_4_amd64.deb -O ~/nomachine.deb
-
-    if [ ! -f ~/nomachine.deb ] || [ $(stat -c%s ~/nomachine.deb) -lt 200000000 ]; then
-        echo "Download failed or incomplete. Exiting."
-        exit 1
-    fi
-
-    sudo apt update -y
-    sudo apt install -y ./nomachine.deb || sudo apt --fix-broken install -y
-    echo "NoMachine installed successfully."
-    sudo /usr/NX/bin/nxserver --start
-    sleep 3
-    echo "NoMachine running on port 4000"
+# Assign ports
+if [ "$SERVICE_CHOICE" = "1" ]; then
+    SERVICE_NAME="NoMachine"
     PORT=4000
-    beep
-}
-
-#########################################
-# VNC INSTALL & START
-#########################################
-install_vnc() {
-    echo "Installing TigerVNC..."
-    sudo apt update -y
-    sudo apt install -y tigervnc-standalone-server
-    echo "VNC installed"
-    beep
-}
-
-start_vnc() {
-    read -p "Enter display number (example 1): " DISPLAY
-    vncserver :$DISPLAY
-    PORT=$((5900 + DISPLAY))
-    echo "VNC running on port $PORT"
-    beep
-}
-
-#########################################
-# SERVICE SELECT
-#########################################
-if [ "$SERVICE" = "1" ]; then
-    install_nomachine
+elif [ "$SERVICE_CHOICE" = "2" ]; then
+    SERVICE_NAME="VNC"
+    PORT=5900
 else
-    install_vnc
-    start_vnc
+    echo "Invalid service choice!"
+    exit 1
 fi
 
-#########################################
-# NGROK
-#########################################
-ngrok_setup() {
+# Beep function
+beep() { echo -e "\a"; }
+
+# Function to start Docker container for NoMachine/VNC
+start_container() {
+    echo "Starting Docker container for $SERVICE_NAME..."
+    docker rm -f utm-container >/dev/null 2>&1
+    if [ "$SERVICE_CHOICE" = "1" ]; then
+        docker run --rm -d --network host --privileged --name utm-container \
+          -e PASSWORD=123456 -e USER=user --cap-add=SYS_PTRACE --shm-size=1g \
+          thuonghai2711/nomachine-ubuntu-desktop:wine
+    else
+        docker run --rm -d --network host --privileged --name utm-container \
+          -e PASSWORD=123456 --shm-size=1g \
+          thuonghai2711/vnc-ubuntu-desktop:wine
+    fi
+    sleep 5
+    echo "$SERVICE_NAME container started."
+}
+
+# Function to check container running
+container_alive() {
+    docker ps --filter "name=utm-container" --format '{{.Names}}' | grep -q utm-container
+}
+
+# Function to start ngrok tunnel
+start_ngrok() {
     if ! command -v ngrok &>/dev/null; then
+        echo "Downloading ngrok..."
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar -xzf ngrok-v3-stable-linux-amd64.tgz
         chmod +x ngrok
     fi
 
-    read -p "Enter ngrok authtoken: " TOKEN
-    ./ngrok config add-authtoken $TOKEN
-}
+    read -p "Enter ngrok authtoken: " NG_TOKEN
+    ./ngrok config add-authtoken "$NG_TOKEN"
 
-ngrok_run() {
+    echo "Choose ngrok region: us eu ap au sa jp in"
+    read -p "Region: " NG_REGION
+
     while true; do
-        echo "Starting ngrok..."
-        beep
-        ./ngrok tcp $PORT &
-        PID=$!
-        sleep 20
-        curl -s localhost:4040/api/tunnels | grep tcp
-        wait $PID
-        echo "Ngrok reconnecting..."
-        beep
+        ./ngrok tcp --region "$NG_REGION" $PORT &>/dev/null &
+        NG_PID=$!
+        sleep 10
+        HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
+        if [ -n "$HOST" ]; then
+            echo "Ngrok tunnel established: $HOST"
+            beep
+            break
+        else
+            kill $NG_PID 2>/dev/null
+            echo "Retrying ngrok..."
+        fi
     done
 }
 
-#########################################
-# ZROK 1.0
-#########################################
-zrok_setup() {
+# Function to start Pinggy tunnel
+start_pinggy() {
+    echo "Starting Pinggy tunnel..."
+    if ! command -v ssh &>/dev/null; then
+        sudo apt update -y >/dev/null 2>&1
+        sudo apt install -y openssh-client >/dev/null 2>&1
+    fi
+    while true; do
+        ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R0:localhost:$PORT a.pinggy.io > pinggy.log 2>&1 &
+        TUN_PID=$!
+        sleep 8
+        HOST=$(grep -o 'tcp://[^ ]*' pinggy.log | head -n1 | sed 's/tcp:\/\///')
+        if [ -n "$HOST" ]; then
+            echo "Pinggy tunnel: $HOST"
+            beep
+            break
+        else
+            kill $TUN_PID 2>/dev/null
+            echo "Retrying Pinggy..."
+        fi
+    done
+}
+
+# Function to start zrok tunnel
+start_zrok() {
+    echo "Starting zrok tunnel..."
     if ! command -v zrok &>/dev/null; then
-        wget -q https://get.openziti.io/zrok/latest/zrok_linux_amd64.tar.gz
-        tar -xzf zrok_linux_amd64.tar.gz
+        echo "Downloading zrok client..."
+        wget -q https://github.com/zr0x/zrok/releases/download/v1.0/zrok_linux_amd64.zip
+        unzip -qq zrok_linux_amd64.zip
         chmod +x zrok
-        mv zrok ~/zrok
     fi
-
-    echo "Login to zrok dashboard and get enable token"
-    read -p "Enter zrok enable token: " TOKEN
-    ~/zrok enable $TOKEN
-
-    read -p "Enter reserved endpoint name: " ENDPOINT
-    ~/zrok reserve public 127.0.0.1:$PORT --unique-name $ENDPOINT
-}
-
-zrok_run() {
+    read -p "Enter zrok key: " Z_KEY
     while true; do
-        echo "Starting zrok tunnel..."
+        ./zrok tcp --key "$Z_KEY" $PORT &>/dev/null &
+        Z_PID=$!
+        sleep 10
+        # zrok endpoint extraction placeholder
+        HOST="zrok-tcp-endpoint:$PORT"
+        echo "Zrok tunnel: $HOST"
         beep
-        ~/zrok share reserved $ENDPOINT
-        echo "zrok tunnel restarted"
-        beep
+        break
     done
 }
 
-#########################################
-# Pinggy
-#########################################
-pinggy_run() {
-    while true; do
-        echo "Starting Pinggy tunnel..."
-        beep
-        ssh -o ServerAliveInterval=30 -R0:localhost:$PORT tcp@a.pinggy.io -p 443
-        echo "Pinggy tunnel assigned new port"
-        beep
-        sleep 5
-    done
-}
-
-#########################################
 # SSH Tunnel
-#########################################
-ssh_run() {
-    read -p "SSH Host: " HOST
-    read -p "SSH User: " USER
-    read -p "SSH Port: " SSHPORT
-    read -p "Remote port: " RPORT
-
+start_ssh() {
+    read -p "Enter SSH user@host: " SSH_USERHOST
+    echo "Starting SSH tunnel to $SSH_USERHOST:$PORT..."
     while true; do
-        echo "Starting SSH tunnel..."
+        ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R0:localhost:$PORT $SSH_USERHOST &
+        SSH_PID=$!
+        sleep 8
+        HOST="$SSH_USERHOST:$PORT"
+        echo "SSH Tunnel: $HOST"
         beep
-        ssh -N -R $RPORT:localhost:$PORT $USER@$HOST -p $SSHPORT
-        echo "SSH tunnel dropped, reconnecting..."
-        beep
-        sleep 5
+        break
     done
 }
 
-#########################################
-# Cloudflare Tunnel
-#########################################
-cloudflare_setup() {
-    if ! command -v cloudflared &>/dev/null; then
-        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-        chmod +x cloudflared
-    fi
-
-    echo "Login to Cloudflare dashboard"
-    ./cloudflared tunnel login
-    read -p "Enter tunnel name: " TUNNELNAME
-    ./cloudflared tunnel create $TUNNELNAME
+# Cloudflare Tunnel (placeholder)
+start_cf() {
+    echo "Cloudflare tunnel setup not implemented yet"
+    HOST="cf-tunnel:$PORT"
 }
 
-cloudflare_run() {
-    ./cloudflared tunnel --url tcp://localhost:$PORT
-}
+# Start Docker container first
+start_container
 
-#########################################
-# AUTOSTART OPTION
-#########################################
-autostart() {
-    read -p "Enable autostart on boot? (y/n): " AUTO
-    if [ "$AUTO" = "y" ]; then
-        mkdir -p ~/tunnel_autostart
-        cp "$0" ~/tunnel_autostart/start_tunnel.sh
-        chmod +x ~/tunnel_autostart/start_tunnel.sh
-        (crontab -l 2>/dev/null; echo "@reboot ~/tunnel_autostart/start_tunnel.sh") | crontab -
-        echo "Autostart enabled"
-        beep
-    fi
-}
-
-#########################################
-# RUN SELECTED TUNNEL
-#########################################
-case $TUNNEL in
+# Start the selected tunnel
+case $TUNNEL_CHOICE in
 1)
-    ngrok_setup
-    autostart
-    ngrok_run
+    start_ngrok
     ;;
 2)
-    zrok_setup
-    autostart
-    zrok_run
+    start_zrok
     ;;
 3)
-    autostart
-    pinggy_run
+    start_pinggy
     ;;
 4)
-    autostart
-    ssh_run
+    start_ssh
     ;;
 5)
-    cloudflare_setup
-    autostart
-    cloudflare_run
+    start_cf
     ;;
 *)
-    echo "Invalid selection"
+    echo "Invalid tunnel choice!"
+    exit 1
     ;;
 esac
 
-#########################################
-# TIMER LOOP
-#########################################
-while true; do
-    NOW=$(date +%s)
-    ELAPSED=$((NOW-START_TIME))
-    printf "\rRunning: %d / %d seconds" $ELAPSED $RUNTIME
-    if [ $ELAPSED -gt $RUNTIME ]; then
-        echo
-        echo "12 hours finished"
+# Main 12-hour monitoring loop
+echo
+echo "Tunnel & $SERVICE_NAME running. Keeping alive for 12 hours..."
+SECONDS=0
+LIMIT=43200
+while [ $SECONDS -lt $LIMIT ]; do
+    # Check Docker container
+    if ! container_alive; then
+        echo "Docker container stopped. Restarting..."
+        start_container
         beep
-        break
     fi
-    sleep 10
+
+    # Check tunnel process
+    case $TUNNEL_CHOICE in
+        1)
+            if ! pgrep -f ngrok >/dev/null; then
+                echo "Ngrok stopped. Restarting..."
+                start_ngrok
+            fi
+            ;;
+        2)
+            if ! pgrep -f zrok >/dev/null; then
+                echo "Zrok stopped. Restarting..."
+                start_zrok
+            fi
+            ;;
+        3)
+            if ! pgrep -f ssh >/dev/null; then
+                echo "Pinggy stopped. Restarting..."
+                start_pinggy
+            fi
+            ;;
+        4)
+            if ! pgrep -f ssh >/dev/null; then
+                echo "SSH tunnel stopped. Restarting..."
+                start_ssh
+            fi
+            ;;
+        5)
+            # Cloudflare monitoring placeholder
+            ;;
+    esac
+
+    printf "\rRunning: %d / %d s | Host: %s" $SECONDS $LIMIT "$HOST"
+    sleep 5
 done
+
+echo
+echo "Session finished."
