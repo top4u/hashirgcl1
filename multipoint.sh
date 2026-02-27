@@ -1,10 +1,10 @@
 #!/bin/bash
-
 clear
 echo "================================="
 echo "      UNIVERSAL TUNNEL MANAGER"
 echo "================================="
-echo
+
+# --- Service selection ---
 echo "Supports tunnels:"
 echo "1 = ngrok"
 echo "2 = zrok"
@@ -31,12 +31,11 @@ else
     exit 1
 fi
 
-# Beep function
 beep() { echo -e "\a"; }
 
-# Function to start Docker container for NoMachine/VNC
+# --- Docker container function ---
 start_container() {
-    echo "Starting Docker container for $SERVICE_NAME..."
+    echo "Starting $SERVICE_NAME container..."
     docker rm -f utm-container >/dev/null 2>&1
     if [ "$SERVICE_CHOICE" = "1" ]; then
         docker run --rm -d --network host --privileged --name utm-container \
@@ -51,181 +50,169 @@ start_container() {
     echo "$SERVICE_NAME container started."
 }
 
-# Function to check container running
-container_alive() {
-    docker ps --filter "name=utm-container" --format '{{.Names}}' | grep -q utm-container
-}
-
-# Function to start ngrok tunnel
-start_ngrok() {
-    if ! command -v ngrok &>/dev/null; then
-        echo "Downloading ngrok..."
-        wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-        tar -xzf ngrok-v3-stable-linux-amd64.tgz
-        chmod +x ngrok
-    fi
-
-    read -p "Enter ngrok authtoken: " NG_TOKEN
-    ./ngrok config add-authtoken "$NG_TOKEN"
-
-    echo "Choose ngrok region: us eu ap au sa jp in"
-    read -p "Region: " NG_REGION
-
-    while true; do
+# --- Tunnel functions ---
+validate_ngrok_token() {
+    local token=$1
+    ./ngrok config add-authtoken "$token" &>/dev/null
+    for i in {1..10}; do
         ./ngrok tcp --region "$NG_REGION" $PORT &>/dev/null &
         NG_PID=$!
-        sleep 10
+        sleep 5
         HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
         if [ -n "$HOST" ]; then
-            echo "Ngrok tunnel established: $HOST"
-            beep
-            break
-        else
             kill $NG_PID 2>/dev/null
-            echo "Retrying ngrok..."
+            echo "Ngrok token valid! Tunnel ready: $HOST"
+            return 0
         fi
+        kill $NG_PID 2>/dev/null
     done
+    return 1
 }
 
-# Function to start Pinggy tunnel
-start_pinggy() {
-    echo "Starting Pinggy tunnel..."
-    if ! command -v ssh &>/dev/null; then
-        sudo apt update -y >/dev/null 2>&1
-        sudo apt install -y openssh-client >/dev/null 2>&1
-    fi
-    while true; do
-        ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R0:localhost:$PORT a.pinggy.io > pinggy.log 2>&1 &
-        TUN_PID=$!
-        sleep 8
-        HOST=$(grep -o 'tcp://[^ ]*' pinggy.log | head -n1 | sed 's/tcp:\/\///')
-        if [ -n "$HOST" ]; then
-            echo "Pinggy tunnel: $HOST"
-            beep
-            break
-        else
-            kill $TUN_PID 2>/dev/null
-            echo "Retrying Pinggy..."
+validate_zrok_token() {
+    local token=$1
+    ./zrok login "$token" &>/dev/null
+    for i in {1..10}; do
+        if ./zrok status &>/dev/null; then
+            echo "Zrok token valid!"
+            return 0
         fi
+        sleep 2
     done
+    return 1
 }
 
-# Function to start zrok tunnel
-start_zrok() {
-    echo "Starting zrok tunnel..."
-    if ! command -v zrok &>/dev/null; then
-        echo "Downloading zrok client..."
-        wget -q https://github.com/zr0x/zrok/releases/download/v1.0/zrok_linux_amd64.zip
-        unzip -qq zrok_linux_amd64.zip
-        chmod +x zrok
-    fi
-    read -p "Enter zrok key: " Z_KEY
-    while true; do
-        ./zrok tcp --key "$Z_KEY" $PORT &>/dev/null &
-        Z_PID=$!
-        sleep 10
-        # zrok endpoint extraction placeholder
-        HOST="zrok-tcp-endpoint:$PORT"
-        echo "Zrok tunnel: $HOST"
-        beep
-        break
-    done
+start_pinggy_tunnel() {
+    pkill -f "R0:localhost:$PORT" >/dev/null 2>&1
+    ssh -o StrictHostKeyChecking=no \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=3 \
+        -p 443 -R0:localhost:$PORT a.pinggy.io >/dev/null 2>&1 &
+    sleep 8
+    HOST=$(grep -o 'tcp://[^ ]*' pinggy.log | head -n1 | sed 's/tcp:\/\///')
 }
 
-# SSH Tunnel
-start_ssh() {
-    read -p "Enter SSH user@host: " SSH_USERHOST
-    echo "Starting SSH tunnel to $SSH_USERHOST:$PORT..."
-    while true; do
-        ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R0:localhost:$PORT $SSH_USERHOST &
-        SSH_PID=$!
-        sleep 8
-        HOST="$SSH_USERHOST:$PORT"
-        echo "SSH Tunnel: $HOST"
-        beep
-        break
-    done
+start_ssh_tunnel() {
+    read -p "Enter SSH host (user@host): " SSH_HOST
+    read -p "Enter remote port: " SSH_PORT
+    ssh -o ServerAliveInterval=30 -R $SSH_PORT:localhost:$PORT $SSH_HOST >/dev/null 2>&1 &
+    HOST="$SSH_HOST:$SSH_PORT"
 }
 
-# Cloudflare Tunnel (placeholder)
-start_cf() {
-    echo "Cloudflare tunnel setup not implemented yet"
-    HOST="cf-tunnel:$PORT"
+start_cloudflare_tunnel() {
+    read -p "Enter Cloudflare Tunnel name: " CF_TUNNEL
+    cloudflared tunnel --url tcp://localhost:$PORT run $CF_TUNNEL >/dev/null 2>&1 &
+    sleep 5
+    HOST="$CF_TUNNEL.localhost"
 }
 
-# Start Docker container first
-start_container
-
-# Start the selected tunnel
+# --- Start tunnel based on choice ---
 case $TUNNEL_CHOICE in
-1)
-    start_ngrok
-    ;;
-2)
-    start_zrok
-    ;;
-3)
-    start_pinggy
-    ;;
-4)
-    start_ssh
-    ;;
-5)
-    start_cf
-    ;;
-*)
-    echo "Invalid tunnel choice!"
-    exit 1
-    ;;
+    1)
+        if ! command -v ngrok &>/dev/null; then
+            echo "Downloading ngrok..."
+            wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+            tar -xzf ngrok-v3-stable-linux-amd64.tgz
+            chmod +x ngrok
+        fi
+        echo "Get your ngrok token: https://dashboard.ngrok.com/get-started/your-authtoken"
+        while true; do
+            read -p "Paste ngrok token: " NG_TOKEN
+            echo "Choose region: us eu ap au sa jp in"
+            read -p "Region: " NG_REGION
+            if validate_ngrok_token "$NG_TOKEN"; then break; else echo "Invalid token. Retry."; fi
+        done
+        start_container
+        ./ngrok tcp --region "$NG_REGION" $PORT &>/dev/null &
+        sleep 5
+        HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
+        ;;
+    2)
+        if ! command -v zrok &>/dev/null; then
+            echo "Downloading zrok 1.0..."
+            wget -q https://github.com/zedapp-org/zrok/releases/download/v1.0/zrok_1.0_linux_amd64.tar.gz
+            tar -xzf zrok_1.0_linux_amd64.tar.gz
+            chmod +x zrok
+        fi
+        echo "Get your zrok token: https://docs.zrok.io/docs/myzrok/upgrading/"
+        while true; do
+            read -p "Paste zrok token: " ZR_TOKEN
+            if validate_zrok_token "$ZR_TOKEN"; then break; else echo "Invalid token. Retry."; fi
+        done
+        start_container
+        ./zrok tcp -p $PORT >/dev/null 2>&1 &
+        HOST="zrok://localhost:$PORT"
+        ;;
+    3)
+        echo "Pinggy free tunnel (expires every 60 min, auto-reconnect will be used)"
+        start_container
+        start_pinggy_tunnel
+        ;;
+    4)
+        start_ssh_tunnel
+        start_container
+        ;;
+    5)
+        start_cloudflare_tunnel
+        start_container
+        ;;
+    *)
+        echo "Invalid tunnel choice!"
+        exit 1
+        ;;
 esac
 
-# Main 12-hour monitoring loop
-echo
-echo "Tunnel & $SERVICE_NAME running. Keeping alive for 12 hours..."
+# --- Show final info ---
+clear
+echo "======================================"
+echo "$SERVICE_NAME Tunnel Ready"
+echo "Host: $HOST"
+echo "User: user"
+echo "Pass: 123456"
+echo "Port: $PORT"
+echo "======================================"
+beep
+
+# --- Keep alive loop ---
 SECONDS=0
-LIMIT=43200
+LIMIT=43200  # 12 hours
 while [ $SECONDS -lt $LIMIT ]; do
-    # Check Docker container
-    if ! container_alive; then
-        echo "Docker container stopped. Restarting..."
+    if ! docker ps --filter "name=utm-container" --format '{{.Names}}' | grep -q utm-container; then
+        echo "Container stopped! Restarting..."
         start_container
         beep
     fi
-
-    # Check tunnel process
     case $TUNNEL_CHOICE in
         1)
             if ! pgrep -f ngrok >/dev/null; then
-                echo "Ngrok stopped. Restarting..."
-                start_ngrok
+                echo "Ngrok stopped! Restarting..."
+                ./ngrok tcp --region "$NG_REGION" $PORT &>/dev/null &
+                beep
             fi
             ;;
         2)
             if ! pgrep -f zrok >/dev/null; then
-                echo "Zrok stopped. Restarting..."
-                start_zrok
+                echo "Zrok stopped! Restarting..."
+                ./zrok tcp -p $PORT >/dev/null 2>&1 &
+                beep
             fi
             ;;
         3)
-            if ! pgrep -f ssh >/dev/null; then
-                echo "Pinggy stopped. Restarting..."
-                start_pinggy
-            fi
+            start_pinggy_tunnel
+            beep
             ;;
         4)
-            if ! pgrep -f ssh >/dev/null; then
-                echo "SSH tunnel stopped. Restarting..."
-                start_ssh
-            fi
+            start_ssh_tunnel
+            beep
             ;;
         5)
-            # Cloudflare monitoring placeholder
+            start_cloudflare_tunnel
+            beep
             ;;
     esac
-
     printf "\rRunning: %d / %d s | Host: %s" $SECONDS $LIMIT "$HOST"
     sleep 5
 done
 
 echo
-echo "Session finished."
+echo "12-hour session finished."
