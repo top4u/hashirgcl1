@@ -129,9 +129,16 @@ case $TUNNEL_CHOICE in
         ;;
     2)
         echo "Installing zrok CLI if missing..."
+
         if ! command -v zrok &>/dev/null; then
-            sudo apt update -y >/dev/null
-            sudo apt install -y zrok >/dev/null
+            echo "Installing zrok from official repository..."
+        
+            curl -sSf https://get.openziti.io/install.bash | sudo bash -s zrok >/dev/null 2>&1
+        
+            if ! command -v zrok &>/dev/null; then
+                echo "zrok install failed!"
+                exit 1
+            fi
         fi
     
         # --- Token input and validation with retries ---
