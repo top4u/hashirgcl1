@@ -128,20 +128,39 @@ case $TUNNEL_CHOICE in
         HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
         ;;
     2)
+        # Install zrok using official install script
         if ! command -v zrok &>/dev/null; then
-            echo "Downloading zrok 1.0..."
-            wget -q https://github.com/zedapp-org/zrok/releases/download/v1.0/zrok_1.0_linux_amd64.tar.gz
-            tar -xzf zrok_1.0_linux_amd64.tar.gz
-            chmod +x zrok
+            echo "Installing zrok CLI..."
+            curl -sSf https://get.openziti.io/install.bash | sudo bash -s zrok
         fi
-        echo "Get your zrok token: https://docs.zrok.io/docs/myzrok/upgrading/"
+    
+        echo ""
+        echo "Get your zrok account token (from https://myzrok.io/)"
         while true; do
             read -p "Paste zrok token: " ZR_TOKEN
-            if validate_zrok_token "$ZR_TOKEN"; then break; else echo "Invalid token. Retry."; fi
+    
+            # Enable environment
+            if zrok enable "$ZR_TOKEN" >/dev/null 2>&1; then
+                echo "zrok enabled!"
+                break
+            else
+                echo "Token invalid or failed. Please check token and retry."
+            fi
         done
+    
         start_container
-        ./zrok tcp -p $PORT >/dev/null 2>&1 &
-        HOST="zrok://localhost:$PORT"
+    
+        echo "Starting zrok share..."
+        zrok share public 127.0.0.1:$PORT >/tmp/zrok-share.log 2>&1 &
+    
+        sleep 8
+        HOST=$(grep -o 'https://[^ ]*' /tmp/zrok-share.log | head -n1)
+    
+        if [ -z "$HOST" ]; then
+            echo "Failed to get zrok share URL, check logs."
+        else
+            echo "zrok share established at $HOST"
+        fi
         ;;
     3)
         echo "Pinggy free tunnel (expires every 60 min, auto-reconnect will be used)"
