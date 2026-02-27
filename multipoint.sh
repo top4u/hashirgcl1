@@ -128,38 +128,44 @@ case $TUNNEL_CHOICE in
         HOST=$(curl -s http://127.0.0.1:4040/api/tunnels | sed -nE 's/.*public_url":"tcp:..([^"]*).*/\1/p')
         ;;
     2)
-        # Install zrok using official install script
-        if ! command -v zrok &>/dev/null; then
-            echo "Installing zrok CLI..."
-            curl -sSf https://get.openziti.io/install.bash | sudo bash -s zrok
-        fi
+        echo "Installing zrok CLI..."
+        sudo apt update -y >/dev/null 2>&1
+        sudo apt install -y zrok >/dev/null 2>&1
     
         echo ""
-        echo "Get your zrok account token (from https://myzrok.io/)"
+        echo "Get your zrok token at https://myzrok.io/"
         while true; do
             read -p "Paste zrok token: " ZR_TOKEN
     
-            # Enable environment
-            if zrok enable "$ZR_TOKEN" >/dev/null 2>&1; then
-                echo "zrok enabled!"
+            if zrok enable "$ZR_TOKEN"; then
+                echo "zrok environment enabled."
                 break
             else
-                echo "Token invalid or failed. Please check token and retry."
+                echo "Enable failed. Check token and retry."
             fi
         done
     
+        # Ask for a name for a *reserved* share (stable endpoint)
+        echo ""
+        read -p "Enter a unique name for this zrok reserved share: " ZR_NAME
+    
+        echo "Creating reserved share..."
+        if ! zrok reserve public 127.0.0.1:$PORT --unique-name "$ZR_NAME"; then
+            echo "Failed to reserve share; you might already have a reservation with this name."
+        fi
+    
         start_container
     
-        echo "Starting zrok share..."
-        zrok share public 127.0.0.1:$PORT >/tmp/zrok-share.log 2>&1 &
+        echo "Starting zrok cover share..."
+        zrok share reserved "$ZR_NAME" > /tmp/zrok-share.log 2>&1 &
     
         sleep 8
-        HOST=$(grep -o 'https://[^ ]*' /tmp/zrok-share.log | head -n1)
+        HOST=$(grep -Eo 'https?://[^ ]+' /tmp/zrok-share.log | head -n1)
     
         if [ -z "$HOST" ]; then
-            echo "Failed to get zrok share URL, check logs."
+            echo "zrok share failed to return a URL. Check your reserved name & token."
         else
-            echo "zrok share established at $HOST"
+            echo "zrok share ready at: $HOST"
         fi
         ;;
     3)
