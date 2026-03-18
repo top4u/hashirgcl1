@@ -2,7 +2,7 @@
 
 clear
 echo "NoMachine + VNC Cloud Shell Tunnel (Auto-Reconnect + Terminal + Telegram Alerts)"
-echo "======================================"
+echo "==============================================================================="
 
 # Ports (fixed on your side)
 NX_PORT=4000
@@ -14,6 +14,9 @@ VNC_LOG="pinggy_vnc.log"
 
 # Total runtime (12 hours)
 LIMIT=43200  # seconds
+
+# Expected Pinggy 1-hour window (when new IP is likely)
+IP_WINDOW=3600  # seconds
 
 # Telegram settings
 TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"
@@ -28,7 +31,6 @@ send_telegram() {
         -d text="$message" >/dev/null 2>&1
 }
 
-# Notify in terminal + Telegram
 notify_user() {
     local service=$1
     local old_host=$2
@@ -53,48 +55,74 @@ Pass: 123456"
     send_telegram "$msg"
 }
 
+# Small spinner for progress feedback
+spinner() {
+    local pid=$1
+    local message="$2"
+    local delay=0.15
+    local spin='-\|/'
+
+    i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        printf "\r%s %s" "$message" "${spin:$i:1}"
+        sleep $delay
+    done
+    printf "\r%s ... done.\n" "$message"
+}
+
 start_nomachine() {
-    docker rm -f nomachine-xfce4 >/dev/null 2>&1
-    docker run --rm -d --network host --privileged \
-      --name nomachine-xfce4 \
-      -e PASSWORD=123456 \
-      -e USER=user \
-      --cap-add=SYS_PTRACE \
-      --shm-size=1g \
-      thuonghai2711/nomachine-ubuntu-desktop:wine >/dev/null 2>&1
-    echo "[NoMachine] Container started"
-    sleep 5
+    (
+        docker rm -f nomachine-xfce4 >/dev/null 2>&1
+        docker run --rm -d --network host --privileged \
+          --name nomachine-xfce4 \
+          -e PASSWORD=123456 \
+          -e USER=user \
+          --cap-add=SYS_PTRACE \
+          --shm-size=1g \
+          thuonghai2711/nomachine-ubuntu-desktop:wine >/dev/null 2>&1
+        # Give container a little time to settle
+        sleep 5
+    ) &
+    spinner $! "Step 1/3: Starting NoMachine container"
 }
 
 start_tunnel() {
     local port=$1
     local logfile=$2
 
-    # Kill any existing tunnel on this port
-    pkill -f "R0:localhost:$port" >/dev/null 2>&1
-    rm -f "$logfile"
+    (
+        pkill -f "R0:localhost:$port" >/dev/null 2>&1
+        rm -f "$logfile"
 
-    # Start new Pinggy tunnel
-    ssh -o StrictHostKeyChecking=no \
-        -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 \
-        -p 443 \
-        -R0:localhost:$port \
-        tcp@a.pinggy.io > "$logfile" 2>&1 &
-
-    echo "[Pinggy] Tunnel for port $port starting..."
-    sleep 5
+        ssh -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -p 443 \
+            -R0:localhost:$port \
+            tcp@a.pinggy.io > "$logfile" 2>&1 &
+        # Let ssh spawn properly
+        sleep 5
+    ) &
+    spinner $! "Step 2/3: Starting Pinggy tunnel for port $port"
 }
 
 get_tunnel_host() {
     local logfile=$1
-    # Always take the LAST occurrence = latest tunnel
     grep -Eo 'tcp://[^ ]+' "$logfile" | tail -n1 | sed 's|tcp://||'
 }
 
 tunnel_alive() {
     local port=$1
     pgrep -f "R0:localhost:$port" >/dev/null
+}
+
+format_time() {
+    local seconds=$1
+    local h=$((seconds / 3600))
+    local m=$(( (seconds % 3600) / 60 ))
+    local s=$((seconds % 60))
+    printf "%02dh:%02dm:%02ds" "$h" "$m" "$s"
 }
 
 print_status() {
@@ -105,35 +133,59 @@ print_status() {
     local vnc_host=$5
     local vnc_port=$6
 
+    local elapsed=$seconds
+    local remaining=$((limit - elapsed))
+    [ $remaining -lt 0 ] && remaining=0
+
+    # Time until next “IP window”
+    local since_last_window=$((elapsed % IP_WINDOW))
+    local until_next_window=$((IP_WINDOW - since_last_window))
+    if [ $until_next_window -gt $remaining ]; then
+        until_next_window=$remaining
+    fi
+
     clear
-    echo "======================================"
-    echo "Tunnels Ready (Auto-Reconnect Enabled)"
-    echo "Runtime: $seconds / $limit seconds"
-    echo ""
+    echo "==============================================================================="
+
+    echo "Cloud Shell: NoMachine + VNC (Auto-Reconnect)"
+    echo "-------------------------------------------------------------------------------"
+    echo "Total Runtime:  $(format_time "$elapsed")  /  $(format_time "$limit")"
+    echo "Next IP window in: $(format_time "$until_next_window")"
+    echo "  (When Pinggy may rotate the tunnel and a NEW host:port will be shown)"
+    echo "==============================================================================="
+
     echo "NoMachine:"
     echo "  Host: $nx_host"
     echo "  Port: $nx_port"
     echo "  User: user"
     echo "  Pass: 123456"
     echo ""
+
     echo "VNC:"
     echo "  Host: $vnc_host"
     echo "  Port: $vnc_port"
     echo "  User: user"
     echo "  Pass: 123456"
-    echo "======================================"
+    echo "==============================================================================="
+    echo "Notes:"
+    echo "  - If your connection drops around the IP window time, check here or Telegram"
+    echo "    for the NEW host:port."
+    echo "  - Your desktop session & files stay the same; only the tunnel changes."
+    echo "==============================================================================="
 }
 
 # ---- MAIN ----
 
-# Start NoMachine container (desktop/session persists)
+# Step 1: Start NoMachine container with progress feedback
 start_nomachine
 
-# Start initial tunnels
+# Step 2: Start tunnels (NoMachine + VNC) with visible progress
 start_tunnel "$NX_PORT" "$NX_LOG"
 start_tunnel "$VNC_PORT" "$VNC_LOG"
 
-# INITIAL HOST RESOLUTION
+# Step 3: Waiting for tunnel assignment
+echo "Step 3/3: Waiting for tunnel host assignment..."
+
 NX_HOST=""
 VNC_HOST=""
 
@@ -142,12 +194,14 @@ for i in {1..20}; do
     VNC_HOST=$(get_tunnel_host "$VNC_LOG")
 
     if [ -n "$NX_HOST" ] && [ -n "$VNC_HOST" ]; then
+        echo "Step 3/3: Tunnel hosts assigned."
         break
     fi
 
-    echo "[Pinggy] Waiting for tunnels... attempt $i"
+    printf "\rStep 3/3: Waiting for tunnel host assignment (attempt %d/20)..." "$i"
     sleep 2
 done
+echo ""
 
 if [ -z "$NX_HOST" ] || [ -z "$VNC_HOST" ]; then
     echo "Failed to start tunnels!"
@@ -158,7 +212,7 @@ if [ -z "$NX_HOST" ] || [ -z "$VNC_HOST" ]; then
     exit 1
 fi
 
-# Initial notification (no "old" host yet)
+# Initial notification (no previous host)
 notify_user "NoMachine" "" "" "$NX_HOST" "$NX_PORT"
 notify_user "VNC" "" "" "$VNC_HOST" "$VNC_PORT"
 
@@ -173,10 +227,11 @@ while [ $SECONDS -lt $LIMIT ]; do
 
     # Check NoMachine tunnel
     if ! tunnel_alive "$NX_PORT"; then
+        echo ""
         echo "[Pinggy] NoMachine tunnel expired. Reconnecting..."
         start_tunnel "$NX_PORT" "$NX_LOG"
 
-        # Wait until new host appears in log
+        # Wait for a different host, if possible
         for j in {1..20}; do
             NEW_NX_HOST=$(get_tunnel_host "$NX_LOG")
             if [ -n "$NEW_NX_HOST" ] && [ "$NEW_NX_HOST" != "$OLD_NX_HOST" ]; then
@@ -184,8 +239,6 @@ while [ $SECONDS -lt $LIMIT ]; do
             fi
             sleep 2
         done
-
-        # If still empty, fallback to whatever we found
         [ -z "$NEW_NX_HOST" ] && NEW_NX_HOST=$(get_tunnel_host "$NX_LOG")
 
         NX_HOST="$NEW_NX_HOST"
@@ -195,10 +248,10 @@ while [ $SECONDS -lt $LIMIT ]; do
 
     # Check VNC tunnel
     if ! tunnel_alive "$VNC_PORT"; then
+        echo ""
         echo "[Pinggy] VNC tunnel expired. Reconnecting..."
         start_tunnel "$VNC_PORT" "$VNC_LOG"
 
-        # Wait until new host appears in log
         for j in {1..20}; do
             NEW_VNC_HOST=$(get_tunnel_host "$VNC_LOG")
             if [ -n "$NEW_VNC_HOST" ] && [ "$NEW_VNC_HOST" != "$OLD_VNC_HOST" ]; then
@@ -206,7 +259,6 @@ while [ $SECONDS -lt $LIMIT ]; do
             fi
             sleep 2
         done
-
         [ -z "$NEW_VNC_HOST" ] && NEW_VNC_HOST=$(get_tunnel_host "$VNC_LOG")
 
         VNC_HOST="$NEW_VNC_HOST"
@@ -214,7 +266,7 @@ while [ $SECONDS -lt $LIMIT ]; do
         OLD_VNC_HOST="$VNC_HOST"
     fi
 
-    # Update single-clear status screen
+    # Refresh status with remaining time + next IP window
     print_status "$SECONDS" "$LIMIT" "$NX_HOST" "$NX_PORT" "$VNC_HOST" "$VNC_PORT"
 
     sleep 5
