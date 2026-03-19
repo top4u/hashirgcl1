@@ -12,8 +12,8 @@ VNC_PORT=5900
 NX_LOG="pinggy_nx.log"
 VNC_LOG="pinggy_vnc.log"
 
-# Total runtime (12 hours)
-LIMIT=43200   # seconds
+# Total runtime (1 month = 30 days)
+LIMIT=$((30 * 24 * 3600))   # seconds
 
 # Pinggy window (1 hour)
 IP_WINDOW=3600
@@ -92,6 +92,8 @@ start_tunnel() {
         pkill -f "R0:localhost:$port" >/dev/null 2>&1
         rm -f "$logfile"
 
+        # SSH options here help handle connection breaks:
+        # - ServerAliveInterval / CountMax: detect dead connections
         ssh -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
@@ -115,10 +117,15 @@ tunnel_alive() {
 
 format_time() {
     local seconds=$1
-    local h=$((seconds / 3600))
+    local d=$((seconds / 86400))
+    local h=$(( (seconds % 86400) / 3600 ))
     local m=$(( (seconds % 3600) / 60 ))
     local s=$((seconds % 60))
-    printf "%02dh:%02dm:%02ds" "$h" "$m" "$s"
+    if [ $d -gt 0 ]; then
+        printf "%dd:%02dh:%02dm:%02ds" "$d" "$h" "$m" "$s"
+    else
+        printf "%02dh:%02dm:%02ds" "$h" "$m" "$s"
+    fi
 }
 
 # Prints the static info ONCE (so user can select/copy safely)
@@ -168,8 +175,7 @@ print_status_line() {
     local nt
     nt=$(format_time "$until_next_window")
 
-    # \r carriage return: overwrite SAME LINE only
-    printf "\rRuntime: %s / %s | Next IP window in: %s   " \
+    printf "\rRuntime: %s / %s (30 days) | Next IP window in: %s   " \
         "$rt" "$(format_time "$limit")" "$nt"
 }
 
@@ -185,7 +191,7 @@ echo "Step 3/3: Waiting for tunnel host assignment..."
 NX_HOST=""
 VNC_HOST=""
 
-for i in {1..20}; do
+for i in {1..40}; do
     NX_HOST=$(get_tunnel_host "$NX_LOG")
     VNC_HOST=$(get_tunnel_host "$VNC_LOG")
 
@@ -194,7 +200,7 @@ for i in {1..20}; do
         break
     fi
 
-    printf "\rStep 3/3: Waiting for tunnel host assignment (attempt %d/20)..." "$i"
+    printf "\rStep 3/3: Waiting for tunnel host assignment (attempt %d/40)..." "$i"
     sleep 2
 done
 echo ""
@@ -225,10 +231,10 @@ while [ $SECONDS -lt $LIMIT ]; do
     # Reconnect NoMachine if needed
     if ! tunnel_alive "$NX_PORT"; then
         echo ""  # move to new line before messages
-        echo "[Pinggy] NoMachine tunnel expired. Reconnecting..."
+        echo "[Pinggy] NoMachine tunnel disconnected (expired or internet break). Reconnecting..."
         start_tunnel "$NX_PORT" "$NX_LOG"
 
-        for j in {1..20}; do
+        for j in {1..40}; do
             NEW_NX_HOST=$(get_tunnel_host "$NX_LOG")
             if [ -n "$NEW_NX_HOST" ] && [ "$NEW_NX_HOST" != "$OLD_NX_HOST" ]; then
                 break
@@ -240,8 +246,6 @@ while [ $SECONDS -lt $LIMIT ]; do
         NX_HOST="$NEW_NX_HOST"
         notify_user "NoMachine" "$OLD_NX_HOST" "$NX_PORT" "$NX_HOST" "$NX_PORT"
 
-        # IMPORTANT: do NOT reprint static info; user might be selecting it.
-        # Only show a small note below.
         echo "New NoMachine host: $NX_HOST:$NX_PORT  (credentials above stay the same)"
 
         OLD_NX_HOST="$NX_HOST"
@@ -250,10 +254,10 @@ while [ $SECONDS -lt $LIMIT ]; do
     # Reconnect VNC if needed
     if ! tunnel_alive "$VNC_PORT"; then
         echo ""
-        echo "[Pinggy] VNC tunnel expired. Reconnecting..."
+        echo "[Pinggy] VNC tunnel disconnected (expired or internet break). Reconnecting..."
         start_tunnel "$VNC_PORT" "$VNC_LOG"
 
-        for j in {1..20}; do
+        for j in {1..40}; do
             NEW_VNC_HOST=$(get_tunnel_host "$VNC_LOG")
             if [ -n "$NEW_VNC_HOST" ] && [ "$NEW_VNC_HOST" != "$OLD_VNC_HOST" ]; then
                 break
@@ -277,4 +281,4 @@ while [ $SECONDS -lt $LIMIT ]; do
 done
 
 echo ""
-echo "[Script] 12-hour session finished."
+echo "[Script] 1-month session finished."
