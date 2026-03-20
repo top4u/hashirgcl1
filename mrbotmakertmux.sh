@@ -28,22 +28,20 @@ fi
 ###############################################################################
 
 clear
-echo "NoMachine + VNC Cloud Shell Tunnel (Auto-Reconnect + Telegram Alerts)"
-echo "====================================================================="
+echo "NoMachine Cloud Shell Tunnel (Auto-Reconnect + Telegram Alerts)"
+echo "================================================================"
 echo "Tip:"
 echo "  - This script is tmux-aware."
 echo "  - If you started it normally and you see this message, it's already"
 echo "    running safely in tmux (session: 'mrbot') if tmux is installed."
 echo "  - You can detach with Ctrl+B then D and it will keep running."
-echo "====================================================================="
+echo "================================================================"
 
-# Ports
+# NoMachine port (inside container and host)
 NX_PORT=4000
-VNC_PORT=5900
 
-# Logs
+# Log file for Pinggy
 NX_LOG="pinggy_nx.log"
-VNC_LOG="pinggy_vnc.log"
 
 # Total runtime (1 month = 30 days)
 LIMIT=$((30 * 24 * 3600))   # seconds
@@ -59,9 +57,11 @@ TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"
 
 send_telegram() {
     local message="$1"
-    curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-        -d chat_id="$TELEGRAM_CHAT_ID" \
-        -d text="$message" >/dev/null 2>&1
+    if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] && [ "$TELEGRAM_BOT_TOKEN" != "YOUR_BOT_TOKEN_HERE" ]; then
+        curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -d chat_id="$TELEGRAM_CHAT_ID" \
+            -d text="$message" >/dev/null 2>&1
+    fi
 }
 
 notify_user() {
@@ -114,7 +114,7 @@ start_nomachine() {
           thuonghai2711/nomachine-ubuntu-desktop:wine >/dev/null 2>&1
         sleep 5
     ) &
-    spinner $! "Step 1/3: Starting NoMachine container"
+    spinner $! "Step 1/2: Starting NoMachine container"
 }
 
 start_tunnel() {
@@ -135,7 +135,7 @@ start_tunnel() {
             tcp@a.pinggy.io > "$logfile" 2>&1 &
         sleep 5
     ) &
-    spinner $! "Step 2/3: Starting Pinggy tunnel for port $port"
+    spinner $! "Step 2/2: Starting Pinggy tunnel for port $port"
 }
 
 get_tunnel_host() {
@@ -165,24 +165,20 @@ format_time() {
 print_static_info() {
     local nx_host=$1
     local nx_port=$2
-    local vnc_host=$3
-    local vnc_port=$4
 
     echo ""
     echo "====================================================================="
-    echo "CONNECTION INFO (Stable - will NOT be rewritten, safe to copy):"
+    echo "NOMACHINE CONNECTION INFO (Stable - will NOT be rewritten, safe to copy):"
     echo ""
-    echo "NoMachine:"
-    echo "  Host: $nx_host"
-    echo "  Port: $nx_port"
-    echo "  User: user"
-    echo "  Pass: 123456"
+    echo "Host: $nx_host"
+    echo "Port: $nx_port"
+    echo "User: user"
+    echo "Pass: 123456"
     echo ""
-    echo "VNC:"
-    echo "  Host: $vnc_host"
-    echo "  Port: $vnc_port"
-    echo "  User: user"
-    echo "  Pass: 123456"
+    echo "Use the NoMachine client and create a new connection with:"
+    echo "  Protocol: NX"
+    echo "  Host: (above Host)"
+    echo "  Port: (above Port)"
     echo "====================================================================="
     echo "Status line (below) will update time only; text above will not change."
     echo "====================================================================="
@@ -215,53 +211,45 @@ print_status_line() {
 # ---------------- MAIN LOGIC ----------------
 
 start_nomachine
-
 start_tunnel "$NX_PORT" "$NX_LOG"
-start_tunnel "$VNC_PORT" "$VNC_LOG"
 
-echo "Step 3/3: Waiting for tunnel host assignment..."
+echo "Waiting for NoMachine tunnel host assignment..."
 
 NX_HOST=""
-VNC_HOST=""
 
 for i in {1..40}; do
     NX_HOST=$(get_tunnel_host "$NX_LOG")
-    VNC_HOST=$(get_tunnel_host "$VNC_LOG")
 
-    if [ -n "$NX_HOST" ] && [ -n "$VNC_HOST" ]; then
-        echo "Step 3/3: Tunnel hosts assigned."
+    if [ -n "$NX_HOST" ]; then
+        echo "Tunnel host assigned."
         break
     fi
 
-    printf "\rStep 3/3: Waiting for tunnel host assignment (attempt %d/40)..." "$i"
+    printf "\rWaiting for tunnel host assignment (attempt %d/40)..." "$i"
     sleep 2
 done
 echo ""
 
-if [ -z "$NX_HOST" ] || [ -z "$VNC_HOST" ]; then
-    echo "Failed to start tunnels!"
+if [ -z "$NX_HOST" ]; then
+    echo "Failed to start NoMachine tunnel!"
     echo "---- NX LOG ----"
     [ -f "$NX_LOG" ] && cat "$NX_LOG"
-    echo "---- VNC LOG ----"
-    [ -f "$VNC_LOG" ] && cat "$VNC_LOG"
     exit 1
 fi
 
 notify_user "NoMachine" "" "" "$NX_HOST" "$NX_PORT"
-notify_user "VNC" "" "" "$VNC_HOST" "$VNC_PORT"
 
 # Print the credentials ONCE and never touch those lines again
-print_static_info "$NX_HOST" "$NX_PORT" "$VNC_HOST" "$VNC_PORT"
+print_static_info "$NX_HOST" "$NX_PORT"
 
 SECONDS=0
 OLD_NX_HOST="$NX_HOST"
-OLD_VNC_HOST="$VNC_HOST"
 
 # Initial status line
 print_status_line "$SECONDS" "$LIMIT"
 
 while [ $SECONDS -lt $LIMIT ]; do
-    # Reconnect NoMachine if needed
+    # Reconnect NoMachine tunnel if needed
     if ! tunnel_alive "$NX_PORT"; then
         echo ""  # move to new line before messages
         echo "[Pinggy] NoMachine tunnel disconnected (expired or internet break). Reconnecting..."
@@ -282,29 +270,6 @@ while [ $SECONDS -lt $LIMIT ]; do
         echo "New NoMachine host: $NX_HOST:$NX_PORT  (credentials above stay the same)"
 
         OLD_NX_HOST="$NX_HOST"
-    fi
-
-    # Reconnect VNC if needed
-    if ! tunnel_alive "$VNC_PORT"; then
-        echo ""
-        echo "[Pinggy] VNC tunnel disconnected (expired or internet break). Reconnecting..."
-        start_tunnel "$VNC_PORT" "$VNC_LOG"
-
-        for j in {1..40}; do
-            NEW_VNC_HOST=$(get_tunnel_host "$VNC_LOG")
-            if [ -n "$NEW_VNC_HOST" ] && [ "$NEW_VNC_HOST" != "$OLD_VNC_HOST" ]; then
-                break
-            fi
-            sleep 2
-        done
-        [ -z "$NEW_VNC_HOST" ] && NEW_VNC_HOST=$(get_tunnel_host "$VNC_LOG")
-
-        VNC_HOST="$NEW_VNC_HOST"
-        notify_user "VNC" "$OLD_VNC_HOST" "$VNC_PORT" "$VNC_HOST" "$VNC_PORT"
-
-        echo "New VNC host: $VNC_HOST:$VNC_PORT  (credentials above stay the same)"
-
-        OLD_VNC_HOST="$VNC_HOST"
     fi
 
     # Update ONLY the status line (no clear, no full repaint)
