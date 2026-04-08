@@ -1,0 +1,90 @@
+#!/bin/bash
+
+clear
+echo "================ VPS AUTO SETUP (NoMachine + Selenium) ================"
+
+# ---------------- USER INPUT ----------------
+read -p "Enter username: " USERNAME
+read -s -p "Enter password: " PASSWORD
+echo ""
+
+# ---------------- CREATE USER ----------------
+echo "[1/8] Creating user..."
+useradd -m -s /bin/bash "$USERNAME"
+echo "$USERNAME:$PASSWORD" | chpasswd
+usermod -aG sudo "$USERNAME"
+
+# ---------------- SYSTEM UPDATE ----------------
+echo "[2/8] Updating system..."
+apt update && apt upgrade -y
+
+# ---------------- INSTALL BASE PACKAGES ----------------
+echo "[3/8] Installing base packages..."
+apt install -y curl wget unzip tmux xvfb dbus-x11 x11-xserver-utils xauth
+
+# ---------------- INSTALL XFCE ----------------
+echo "[4/8] Installing XFCE desktop..."
+apt install -y xfce4 xfce4-goodies
+
+# Create XFCE session
+echo "exec startxfce4" > /home/$USERNAME/.xsession
+chown $USERNAME:$USERNAME /home/$USERNAME/.xsession
+
+# ---------------- INSTALL NOMACHINE ----------------
+echo "[5/8] Installing NoMachine..."
+wget https://download.nomachine.com/download/9.4/Linux/nomachine_9.4.14_1_amd64.deb -O nomachine.deb
+apt install ./nomachine.deb -y
+/usr/NX/bin/nxserver --restart
+
+# ---------------- INSTALL CHROME ----------------
+echo "[6/8] Installing Google Chrome..."
+wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+
+apt update
+apt install -y google-chrome-stable
+
+# ---------------- INSTALL LIBRARIES ----------------
+echo "[7/8] Installing required libraries..."
+apt install -y \
+libnss3 \
+libxss1 \
+libasound2t64 \
+libatk-bridge2.0-0t64 \
+libgtk-3-0t64 \
+libgbm1 \
+libu2f-udev \
+fonts-liberation \
+libappindicator3-1 \
+libxrandr2 \
+libxdamage1 \
+libxfixes3 \
+libxcomposite1 \
+libxkbcommon0
+
+# ---------------- INSTALL CHROMEDRIVER ----------------
+echo "[8/8] Installing Chromedriver..."
+
+CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+echo "Detected Chrome: $CHROME_VERSION"
+
+wget https://storage.googleapis.com/chrome-for-testing-public/147.0.7727.55/linux64/chromedriver-linux64.zip -O chromedriver.zip
+unzip chromedriver.zip
+mv chromedriver-linux64/chromedriver /usr/local/bin/
+chmod +x /usr/local/bin/chromedriver
+
+# ---------------- FIX PERMISSIONS ----------------
+mkdir -p /home/$USERNAME/.config
+chown -R $USERNAME:$USERNAME /home/$USERNAME
+
+# ---------------- FINAL MESSAGE ----------------
+clear
+echo "================ SETUP COMPLETE ================"
+echo "Login via NoMachine using:"
+echo ""
+echo "User: $USERNAME"
+echo "Pass: $PASSWORD"
+echo ""
+echo "Then run Chrome or Selenium inside NoMachine terminal."
+echo "================================================"
