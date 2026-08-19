@@ -1,23 +1,65 @@
+Looking at your request, you want the script to be smarter about tmux session detection. Here's the improved version:
+
+```bash
 #!/bin/bash
 
 ###############################################################################
-# tmux auto-attach / auto-start (for persistence)
+# tmux auto-attach / auto-start (for persistence) - SMART DETECTION
 ###############################################################################
 
-# If not already inside tmux and tmux is available, re-run inside "mrbot" session
+TMUX_SESSION="mrbot"
+
+# Function: Check if the mrbot session is actually running a live NoMachine tunnel
+session_has_live_rdp() {
+    # 1. Session must exist
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null || return 1
+
+    # 2. There must be a live Pinggy tunnel process (ssh -R0:localhost:4000)
+    if ! pgrep -f "R0:localhost:4000" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # 3. The NoMachine container must be up and running
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nomachine-xfce4$'; then
+        return 1
+    fi
+
+    # All good: there is a healthy running RDP/NoMachine session
+    return 0
+}
+
+# If not already inside tmux and tmux is available
 if [ -z "$TMUX" ] && command -v tmux >/dev/null 2>&1; then
-    # Are we already in the special "child" mode to avoid recursion?
     if [ "$MRBOT_TMUX_WRAPPED" != "1" ]; then
         export MRBOT_TMUX_WRAPPED=1
 
-        # If session "mrbot" exists, attach and run this script inside it
-        if tmux has-session -t mrbot 2>/dev/null; then
-            echo "[tmux] Attaching to existing session 'mrbot'..."
-            tmux attach -t mrbot
-            exit 0
+        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            if session_has_live_rdp; then
+                echo "[tmux] Existing session '$TMUX_SESSION' has a LIVE NoMachine tunnel."
+                echo "[tmux] Attaching to it (not restarting)..."
+                sleep 1
+                tmux attach -t "$TMUX_SESSION"
+                exit 0
+            else
+                echo "[tmux] Session '$TMUX_SESSION' exists but has NO live NoMachine display/tunnel."
+                echo "[tmux] Killing stale session and starting fresh..."
+
+                # Kill stale tmux session
+                tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+
+                # Clean up any leftover tunnel / container from the dead session
+                pkill -f "R0:localhost:4000" >/dev/null 2>&1
+                docker rm -f nomachine-xfce4 >/dev/null 2>&1
+
+                sleep 1
+
+                echo "[tmux] Creating fresh session '$TMUX_SESSION'..."
+                tmux new -s "$TMUX_SESSION" "bash \"$0\"; echo; echo \"[mrbotmaker] Script finished. Press ENTER to close tmux window.\"; read"
+                exit 0
+            fi
         else
-            echo "[tmux] Creating new session 'mrbot' and running this script inside it..."
-            tmux new -s mrbot "bash \"$0\"; echo; echo \"[mrbotmaker] Script finished. Press ENTER to close tmux window.\"; read"
+            echo "[tmux] No existing session. Creating new session '$TMUX_SESSION'..."
+            tmux new -s "$TMUX_SESSION" "bash \"$0\"; echo; echo \"[mrbotmaker] Script finished. Press ENTER to close tmux window.\"; read"
             exit 0
         fi
     fi
@@ -31,10 +73,12 @@ clear
 echo "NoMachine Cloud Shell Tunnel (Auto-Reconnect + Telegram Alerts)"
 echo "================================================================"
 echo "Tip:"
-echo "  - This script is tmux-aware."
-echo "  - If you started it normally and you see this message, it's already"
-echo "    running safely in tmux (session: 'mrbot') if tmux is installed."
-echo "  - You can detach with Ctrl+B then D and it will keep running."
+echo "  - This script is tmux-aware and SMART:"
+echo "      * If an existing '$TMUX_SESSION' session already has a LIVE"
+echo "        NoMachine tunnel, it attaches to it instead of restarting."
+echo "      * If the session exists but is dead/stale, it is killed and a"
+echo "        fresh one is started automatically."
+echo "  - Detach with Ctrl+B then D and it will keep running."
 echo "================================================================"
 
 # NoMachine port (inside container and host)
@@ -102,7 +146,19 @@ spinner() {
     printf "\r%s ... done.\n" "$message"
 }
 
+# Detect whether a healthy NoMachine container is ALREADY running.
+# Returns 0 if running, 1 if not.
+nomachine_container_alive() {
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nomachine-xfce4$'
+}
+
 start_nomachine() {
+    # If a healthy container is already running, DO NOT restart it.
+    if nomachine_container_alive; then
+        printf "\rStep 1/2: Existing NoMachine container detected -> reusing it. done.\n"
+        return 0
+    fi
+
     (
         docker rm -f nomachine-xfce4 >/dev/null 2>&1
         docker run --rm -d --network host --privileged \
@@ -125,8 +181,6 @@ start_tunnel() {
         pkill -f "R0:localhost:$port" >/dev/null 2>&1
         rm -f "$logfile"
 
-        # SSH options here help handle connection breaks:
-        # - ServerAliveInterval / CountMax: detect dead connections
         ssh -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
@@ -161,7 +215,6 @@ format_time() {
     fi
 }
 
-# Prints the static info ONCE (so user can select/copy safely)
 print_static_info() {
     local nx_host=$1
     local nx_port=$2
@@ -184,7 +237,6 @@ print_static_info() {
     echo "====================================================================="
 }
 
-# Updates ONLY one status line at the bottom using \r
 print_status_line() {
     local seconds=$1
     local limit=$2
@@ -239,44 +291,15 @@ fi
 
 notify_user "NoMachine" "" "" "$NX_HOST" "$NX_PORT"
 
-# Print the credentials ONCE and never touch those lines again
 print_static_info "$NX_HOST" "$NX_PORT"
 
 SECONDS=0
 OLD_NX_HOST="$NX_HOST"
 
-# Initial status line
 print_status_line "$SECONDS" "$LIMIT"
 
 while [ $SECONDS -lt $LIMIT ]; do
     # Reconnect NoMachine tunnel if needed
     if ! tunnel_alive "$NX_PORT"; then
-        echo ""  # move to new line before messages
-        echo "[Pinggy] NoMachine tunnel disconnected (expired or internet break). Reconnecting..."
-        start_tunnel "$NX_PORT" "$NX_LOG"
-
-        for j in {1..40}; do
-            NEW_NX_HOST=$(get_tunnel_host "$NX_LOG")
-            if [ -n "$NEW_NX_HOST" ] && [ "$NEW_NX_HOST" != "$OLD_NX_HOST" ]; then
-                break
-            fi
-            sleep 2
-        done
-        [ -z "$NEW_NX_HOST" ] && NEW_NX_HOST=$(get_tunnel_host "$NX_LOG")
-
-        NX_HOST="$NEW_NX_HOST"
-        notify_user "NoMachine" "$OLD_NX_HOST" "$NX_PORT" "$NX_HOST" "$NX_PORT"
-
-        echo "New NoMachine host: $NX_HOST:$NX_PORT  (credentials above stay the same)"
-
-        OLD_NX_HOST="$NX_HOST"
-    fi
-
-    # Update ONLY the status line (no clear, no full repaint)
-    print_status_line "$SECONDS" "$LIMIT"
-
-    sleep 1
-done
-
-echo ""
-echo "[Script] 1-month session finished."
+        echo ""
+        echo "[Pinggy] NoMachine tunnel disconnected (expired or internet break). Reconn
